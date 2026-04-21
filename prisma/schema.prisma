@@ -1,0 +1,128 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String       @id @default(cuid())
+  username     String       @unique
+  displayName  String
+  passwordHash String
+  role         String       @default("USER")
+  avatarUrl    String?
+  backgroundUrl String?
+  bio          String?
+  profileSections String     @default("offline,online,notes")
+  entries      DiaryEntry[]
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+}
+
+model DiaryEntry {
+  id        String    @id @default(cuid())
+  type      String    @default("OFFLINE")
+  title     String
+  dateText  String
+  location  String?
+  artist    String?
+  summary   String
+  highlight String?
+  mediaUrl  String?
+  isPinned  Boolean   @default(false)
+  tags      EntryTag[]
+  authorId  String?
+  author    User?     @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([authorId])
+}
+
+model EntryTag {
+  id      String     @id @default(cuid())
+  name    String
+  entryId String
+  entry   DiaryEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@index([entryId])
+}
+
+model Goal {
+  id        String   @id @default(cuid())
+  title     String
+  detail    String
+  progress  Int      @default(0)
+  status    String   @default("IN_PROGRESS")
+  dueText   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Skill {
+  id        String   @id @default(cuid())
+  name      String
+  level     String
+  copy      String
+  sortOrder Int      @default(0)
+  mediaUrl  String?
+  artist    String?
+  achievements SkillAchievement[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SkillAchievement {
+  id        String   @id @default(cuid())
+  title     String
+  detail    String
+  dateText  String?
+  skillId   String
+  skill     Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([skillId])
+}
+
+model ArtistSchedule {
+  id        String   @id @default(cuid())
+  dateText  String
+  artist    String
+  title     String
+  status    String   @default("PLANNED")
+  note      String?
+  linkUrl   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model MusicTrack {
+  id        String   @id @default(cuid())
+  artist    String
+  title     String
+  mood      String
+  accent    String
+  audioUrl  String?
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model VideoSpotlight {
+  id          String   @id @default(cuid())
+  title       String
+  artist      String
+  publishDate String
+  reason      String
+  note        String
+  videoUrl    String?
+  coverUrl    String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
