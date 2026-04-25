@@ -21,19 +21,24 @@ export async function POST(request: Request) {
     return databaseMissingResponse();
   }
 
-  const body = await request.json();
-  const video = await prisma.videoSpotlight.create({
-    data: {
-      title: String(body.title ?? ""),
-      artist: String(body.artist ?? ""),
-      publishDate: String(body.publishDate ?? ""),
-      reason: String(body.reason ?? ""),
-      note: String(body.note ?? ""),
-      videoUrl: body.videoUrl ? String(body.videoUrl) : null,
-      coverUrl: body.coverUrl ? String(body.coverUrl) : null,
-      isActive: true
-    }
-  });
+  try {
+    const body = await request.json();
+    const video = await prisma.videoSpotlight.create({
+      data: {
+        title: String(body.title ?? ""),
+        artist: String(body.artist ?? ""),
+        publishDate: String(body.publishDate ?? ""),
+        reason: String(body.reason ?? ""),
+        note: String(body.note ?? ""),
+        videoUrl: body.videoUrl ? String(body.videoUrl) : null,
+        coverUrl: body.coverUrl ? String(body.coverUrl) : null,
+        isActive: true
+      }
+    });
 
-  return NextResponse.json(video, { status: 201 });
+    return NextResponse.json(video, { status: 201 });
+  } catch (error) {
+    console.error(error);
+    return NextResponse.json({ message: "顶部视频保存失败，请检查链接或稍后再试。" }, { status: 500 });
+  }
 }

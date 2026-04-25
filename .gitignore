@@ -6,3 +6,8 @@ out
 dist
 coverage
 *.log
+.idea
+tsconfig.tsbuildinfo
+prisma/dev.db
+public/uploads
+*.png

@@ -2,6 +2,7 @@
 
 import { type ReactNode, FormEvent, useEffect, useId, useMemo, useState } from "react";
 import { ArrowLeft, Check, LayoutGrid, Link, PencilLine, Save, UploadCloud, UserCircle } from "lucide-react";
+import { uploadMediaFile } from "@/lib/client-upload";
 
 type CurrentUser = {
   id: string;
@@ -356,15 +357,15 @@ function MediaPreview({ alt, source }: { alt: string; source?: string | null }) 
   const embedUrl = getEmbeddableVideoUrl(normalizedSource);
   if (!normalizedSource) return null;
   if (isVideoSource(normalizedSource)) {
-    return <div className="profile-feed-media"><video controls src={normalizedSource} /></div>;
+    return <div className="profile-feed-media media-frame media-frame-video"><video controls src={normalizedSource} /></div>;
   }
   if (isImageSource(normalizedSource) || normalizedSource.startsWith("/uploads/")) {
-    return <div className="profile-feed-media"><img alt={alt} src={normalizedSource} /></div>;
+    return <div className="profile-feed-media media-frame media-frame-image"><img alt={alt} src={normalizedSource} /></div>;
   }
   if (embedUrl) {
-    return <div className="profile-feed-media"><iframe src={embedUrl} title={alt} allow="autoplay; encrypted-media; picture-in-picture" allowFullScreen /></div>;
+    return <div className="profile-feed-media media-frame media-frame-embed"><iframe src={embedUrl} title={alt} allow="autoplay; encrypted-media; picture-in-picture" allowFullScreen /></div>;
   }
-  return <div className="profile-feed-media"><ResolvedEmbedFrame source={normalizedSource} title={alt} fallback={<a className="entry-link-card" href={normalizedSource} rel="noreferrer" target="_blank">打开链接</a>} /></div>;
+  return <div className="profile-feed-media media-frame media-frame-embed"><ResolvedEmbedFrame source={normalizedSource} title={alt} fallback={<a className="entry-link-card" href={normalizedSource} rel="noreferrer" target="_blank">打开链接</a>} /></div>;
 }
 
 function ResolvedEmbedFrame({ fallback, source, title }: { fallback: ReactNode; source: string; title: string }) {
@@ -417,17 +418,15 @@ function MediaSourceInput({
   async function handleUpload(file: File) {
     setUploading(true);
     setMessage("");
-    const formData = new FormData();
-    formData.append("file", file);
-    const response = await fetch("/api/uploads", { method: "POST", body: formData });
-    const result = await response.json();
-    setUploading(false);
-    if (!response.ok) {
-      setMessage(result.message ?? "上传失败。");
-      return;
+    try {
+      const url = await uploadMediaFile(file);
+      onChange(url);
+      setMessage("Uploaded.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Upload failed.");
+    } finally {
+      setUploading(false);
     }
-    onChange(result.url);
-    setMessage("本地文件已上传。");
   }
 
   return (
@@ -436,7 +435,7 @@ function MediaSourceInput({
       <div className="media-source-row">
         <label className="media-upload-button" htmlFor={inputId}>
           <UploadCloud size={16} />
-          {uploading ? "上传中..." : "本地上传"}
+          {uploading ? "Uploading..." : "Upload"}
         </label>
         <input
           accept={accept}

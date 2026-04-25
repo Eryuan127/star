@@ -10,25 +10,25 @@ function normalizeExternalUrl(value: string) {
   return trimmed;
 }
 
-function buildBilibiliEmbed(url: string) {
+function buildBilibiliEmbed(url: string, autoplay = false) {
   const bvid = url.match(/BV[0-9A-Za-z]+/i)?.[0];
   if (bvid) {
-    return `https://player.bilibili.com/player.html?bvid=${bvid}&page=1&autoplay=0&muted=1&high_quality=1`;
+    return `https://player.bilibili.com/player.html?bvid=${bvid}&page=1&autoplay=${autoplay ? 1 : 0}&muted=1&loop=1&high_quality=1`;
   }
 
   const aid = url.match(/(?:\/video\/av|[?&]aid=|av)(\d+)/i)?.[1];
   if (aid) {
-    return `https://player.bilibili.com/player.html?aid=${aid}&page=1&autoplay=0&muted=1&high_quality=1`;
+    return `https://player.bilibili.com/player.html?aid=${aid}&page=1&autoplay=${autoplay ? 1 : 0}&muted=1&loop=1&high_quality=1`;
   }
 
   return "";
 }
 
-function getEmbeddableVideoUrl(value: string) {
+function getEmbeddableVideoUrl(value: string, autoplay = false) {
   const url = normalizeExternalUrl(value);
   if (!url) return "";
 
-  const bilibiliEmbed = buildBilibiliEmbed(url);
+  const bilibiliEmbed = buildBilibiliEmbed(url, autoplay);
   if (bilibiliEmbed) return bilibiliEmbed;
 
   try {
@@ -37,12 +37,12 @@ function getEmbeddableVideoUrl(value: string) {
 
     if (host === "youtu.be") {
       const id = parsed.pathname.split("/").filter(Boolean)[0];
-      return id ? `https://www.youtube.com/embed/${id}?autoplay=0&mute=1&playsinline=1&rel=0` : "";
+      return id ? `https://www.youtube.com/embed/${id}?autoplay=${autoplay ? 1 : 0}&mute=1&loop=1&playlist=${id}&playsinline=1&rel=0` : "";
     }
 
     if (host.includes("youtube.com")) {
       const id = parsed.searchParams.get("v") ?? parsed.pathname.match(/\/shorts\/([^/?]+)/)?.[1] ?? parsed.pathname.match(/\/embed\/([^/?]+)/)?.[1];
-      return id ? `https://www.youtube.com/embed/${id}?autoplay=0&mute=1&playsinline=1&rel=0` : "";
+      return id ? `https://www.youtube.com/embed/${id}?autoplay=${autoplay ? 1 : 0}&mute=1&loop=1&playlist=${id}&playsinline=1&rel=0` : "";
     }
   } catch {
     return "";
@@ -59,7 +59,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ embedUrl: "", finalUrl: originalUrl });
   }
 
-  const directEmbed = getEmbeddableVideoUrl(originalUrl);
+  const autoplay = searchParams.get("autoplay") === "1";
+  const directEmbed = getEmbeddableVideoUrl(originalUrl, autoplay);
   if (directEmbed) {
     return NextResponse.json({ embedUrl: directEmbed, finalUrl: originalUrl });
   }
@@ -76,7 +77,7 @@ export async function GET(request: Request) {
 
     const finalUrl = response.url || originalUrl;
     return NextResponse.json({
-      embedUrl: getEmbeddableVideoUrl(finalUrl),
+      embedUrl: getEmbeddableVideoUrl(finalUrl, autoplay),
       finalUrl
     });
   } catch {

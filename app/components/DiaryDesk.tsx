@@ -1,10 +1,13 @@
 "use client";
 
-import { type CSSProperties, type ReactNode, FormEvent, useEffect, useId, useMemo, useState } from "react";
+import { type CSSProperties, type ReactNode, FormEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   Database,
+  Disc3,
   Heart,
+  Home,
+  ListMusic,
   Link,
   LogIn,
   Mic2,
@@ -12,16 +15,20 @@ import {
   PencilLine,
   Play,
   Plus,
-  Radio,
+  Repeat,
+  Repeat1,
   Save,
+  Settings,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Shuffle,
   Trash2,
   UploadCloud,
   UserPlus,
   Video,
-  X
+  X,
+  type LucideIcon
 } from "lucide-react";
 import {
   musicTracks,
@@ -34,9 +41,11 @@ import {
   stats,
   videoPick
 } from "@/lib/data";
+import { uploadMediaFile } from "@/lib/client-upload";
 
-type PageId = (typeof navItems)[number]["id"];
+type PageId = (typeof navItems)[number]["id"] | "memories" | "profile";
 type EntryType = "OFFLINE" | "ONLINE" | "NOTE";
+type PlaybackMode = "list" | "single" | "shuffle";
 
 type CurrentUser = {
   id: string;
@@ -179,6 +188,15 @@ type SkillDraft = {
   sortOrder: string;
 };
 
+type ProfileEditDraft = {
+  displayName: string;
+  avatarUrl: string;
+  backgroundUrl: string;
+  backgroundCropX: number;
+  backgroundCropY: number;
+  backgroundZoom: number;
+};
+
 type VideoDraft = {
   title: string;
   artist: string;
@@ -195,6 +213,14 @@ type MusicDraft = {
   mood: string;
   accent: string;
   audioUrl: string;
+};
+
+type PlaylistImportResult = {
+  importedCount?: number;
+  skippedCount?: number;
+  updatedCount?: number;
+  playlistTitle?: string;
+  message?: string;
 };
 
 type AppSettings = {
@@ -264,6 +290,15 @@ const emptyMusicDraft: MusicDraft = {
   audioUrl: ""
 };
 
+const emptyTrack: CmsTrack = {
+  id: "empty-track",
+  artist: "",
+  title: "暂无歌曲",
+  mood: "可以在设置里添加或导入歌单",
+  accent: "#D97F9F",
+  audioUrl: ""
+};
+
 const pageTitles: Record<PageId, { title: string; copy: string }> = {
   home: {
     title: "我的追星日记",
@@ -285,9 +320,17 @@ const pageTitles: Record<PageId, { title: string; copy: string }> = {
     title: "追星技能",
     copy: "点击技能板块，记录你之前习得的成就和作品。"
   },
+  memories: {
+    title: "回忆",
+    copy: "把线上和线下的记录分开摆好，方便以后按场景翻回去看。"
+  },
   notes: {
     title: "碎碎念",
     copy: "不需要很正式，只要把被治愈、被击中、被点亮的瞬间留下。"
+  },
+  profile: {
+    title: "我的",
+    copy: "头像、名字、用户名和你选择展示的主页内容都放在这里。"
   }
 };
 
@@ -310,11 +353,47 @@ function normalizeTags(tags: CmsEntry["tags"]) {
 }
 
 function isVideoSource(url?: string | null) {
-  return Boolean(url && /\.(mp4|mov|webm)(\?.*)?$/i.test(url));
+  return Boolean(url && /\.(mp4|mov|webm)(\?.*)?$/i.test(stripProfileCrop(url)));
 }
 
 function isImageSource(url?: string | null) {
-  return Boolean(url && /\.(avif|gif|jpe?g|png|webp)(\?.*)?$/i.test(url));
+  return Boolean(url && /\.(avif|gif|jpe?g|png|webp)(\?.*)?$/i.test(stripProfileCrop(url)));
+}
+
+function stripProfileCrop(value?: string | null) {
+  return (value ?? "").split("#crop=")[0];
+}
+
+function parseProfileBackground(value?: string | null) {
+  const raw = value?.trim() ?? "";
+  const [url, cropText] = raw.split("#crop=");
+  const [x, y, zoom] = (cropText ?? "").split(",").map(Number);
+  return {
+    url,
+    x: Number.isFinite(x) ? x : 50,
+    y: Number.isFinite(y) ? y : 50,
+    zoom: Number.isFinite(zoom) ? zoom : 1
+  };
+}
+
+function encodeProfileBackground(url: string, x: number, y: number, zoom: number) {
+  const cleanUrl = stripProfileCrop(url).trim();
+  if (!cleanUrl) return "";
+  return `${cleanUrl}#crop=${Math.round(x)},${Math.round(y)},${Number(zoom.toFixed(2))}`;
+}
+
+function profileBackgroundStyle(value?: string | null, draft?: Pick<ProfileEditDraft, "backgroundCropX" | "backgroundCropY" | "backgroundZoom">) {
+  const parsed = parseProfileBackground(value);
+  const url = parsed.url;
+  const x = draft?.backgroundCropX ?? parsed.x;
+  const y = draft?.backgroundCropY ?? parsed.y;
+  const zoom = draft?.backgroundZoom ?? parsed.zoom;
+  if (!url || isVideoSource(url)) return undefined;
+  return {
+    backgroundImage: `url(${url})`,
+    backgroundPosition: `${x}% ${y}%`,
+    backgroundSize: `${Math.max(1, zoom) * 100}% auto`
+  } as CSSProperties;
 }
 
 function normalizeExternalUrl(value?: string | null) {
@@ -329,11 +408,11 @@ function buildBilibiliEmbed(url?: string | null, autoplay = false) {
   const normalized = normalizeExternalUrl(url);
   const bvid = normalized.match(/BV[0-9A-Za-z]+/i)?.[0];
   if (bvid) {
-    return `https://player.bilibili.com/player.html?bvid=${bvid}&page=1&autoplay=${autoplay ? 1 : 0}&muted=1&high_quality=1`;
+    return `https://player.bilibili.com/player.html?bvid=${bvid}&page=1&autoplay=${autoplay ? 1 : 0}&muted=1&loop=1&high_quality=1`;
   }
   const aid = normalized.match(/(?:\/video\/av|[?&]aid=|av)(\d+)/i)?.[1];
   if (aid) {
-    return `https://player.bilibili.com/player.html?aid=${aid}&page=1&autoplay=${autoplay ? 1 : 0}&muted=1&high_quality=1`;
+    return `https://player.bilibili.com/player.html?aid=${aid}&page=1&autoplay=${autoplay ? 1 : 0}&muted=1&loop=1&high_quality=1`;
   }
   return "";
 }
@@ -373,14 +452,20 @@ function getMusicPlaylistEmbedUrl(url?: string | null) {
     const host = parsed.hostname.replace(/^www\./, "");
 
     if (host.includes("music.163.com") || host.includes("163cn.tv")) {
-      const playlistId = parsed.searchParams.get("id") ?? parsed.hash.match(/playlist\?id=(\d+)/)?.[1] ?? parsed.pathname.match(/playlist\/(\d+)/)?.[1];
+      const isPlaylist = parsed.pathname.includes("playlist") || parsed.hash.includes("playlist");
+      const songId = !isPlaylist ? parsed.searchParams.get("id") ?? parsed.hash.match(/song\?id=(\d+)/)?.[1] : null;
+      const playlistId = isPlaylist ? parsed.searchParams.get("id") ?? parsed.hash.match(/playlist\?id=(\d+)/)?.[1] ?? parsed.pathname.match(/playlist\/(\d+)/)?.[1] : null;
+      if (songId) return `https://music.163.com/outchain/player?type=2&id=${songId}&auto=1&height=86`;
       return playlistId ? `https://music.163.com/outchain/player?type=0&id=${playlistId}&auto=1&height=430` : "";
     }
 
-  if (host.includes("y.qq.com") || host.includes("qq.com")) {
-      const songId = parsed.pathname.match(/songDetail\/([^/?]+)/)?.[1] ?? parsed.searchParams.get("songmid") ?? parsed.searchParams.get("songid");
+    if (host.includes("y.qq.com") || host.includes("qq.com")) {
+      const pathSongMid = parsed.pathname.match(/songDetail\/([^/?]+)/)?.[1];
+      const songMid = pathSongMid ?? parsed.searchParams.get("songmid");
+      const songId = parsed.searchParams.get("songid");
       const playlistId = parsed.pathname.match(/playlist\/(\d+)/)?.[1] ?? parsed.searchParams.get("id") ?? parsed.searchParams.get("dirid") ?? parsed.searchParams.get("disstid");
-      if (songId) return `https://i.y.qq.com/n2/m/outchain/player/index.html?songmid=${songId}`;
+      if (songMid) return `https://i.y.qq.com/n2/m/outchain/player/index.html?songmid=${songMid}`;
+      if (songId) return `https://i.y.qq.com/n2/m/outchain/player/index.html?songid=${songId}`;
       if (playlistId) return `https://i.y.qq.com/n2/m/outchain/player/index.html?songlist=${playlistId}`;
     }
   } catch {
@@ -392,6 +477,25 @@ function getMusicPlaylistEmbedUrl(url?: string | null) {
 
 function isAudioSource(url?: string | null) {
   return Boolean(url && /\.(mp3|m4a|ogg|wav|webm)(\?.*)?$/i.test(url));
+}
+
+function getPlayableAudioUrl(url?: string | null) {
+  const normalized = normalizeExternalUrl(url);
+  if (!normalized) return "";
+  if (isAudioSource(normalized)) return normalized;
+  return "";
+}
+
+function getPlatformTrackDurationMs(url?: string | null) {
+  const normalized = normalizeExternalUrl(url);
+  if (!normalized) return 220000;
+  try {
+    const parsed = new URL(normalized);
+    const durationSeconds = Number(parsed.searchParams.get("duration") ?? 0);
+    return durationSeconds > 0 ? Math.max(15000, durationSeconds * 1000 + 1500) : 220000;
+  } catch {
+    return 220000;
+  }
 }
 
 function guessTrackMetaFromUrl(url: string) {
@@ -475,10 +579,23 @@ function draftFromSkill(skill: CmsSkill): SkillDraft {
   };
 }
 
+function profileEditDraftFromUser(user: CurrentUser): ProfileEditDraft {
+  const background = parseProfileBackground(user.backgroundUrl);
+  return {
+    displayName: user.displayName,
+    avatarUrl: user.avatarUrl ?? "",
+    backgroundUrl: background.url,
+    backgroundCropX: background.x,
+    backgroundCropY: background.y,
+    backgroundZoom: background.zoom
+  };
+}
+
 export function DiaryDesk() {
   const [activePage, setActivePage] = useState<PageId>("home");
   const [activeTrackIndex, setActiveTrackIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
+  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>("list");
   const [cmsData, setCmsData] = useState<CmsPayload | null>(null);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [entryDraft, setEntryDraft] = useState<EntryDraft | null>(null);
@@ -490,6 +607,7 @@ export function DiaryDesk() {
   const [skillDraft, setSkillDraft] = useState<SkillDraft | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [scheduleListOpen, setScheduleListOpen] = useState(false);
+  const [mobileProfileDraft, setMobileProfileDraft] = useState<ProfileEditDraft | null>(null);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [authOpen, setAuthOpen] = useState(false);
   const [status, setStatus] = useState("");
@@ -610,7 +728,7 @@ export function DiaryDesk() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(draft)
     });
-    const result = await response.json();
+    const result = await readJsonSafely(response) as { message?: string };
     if (!response.ok) {
       setStatus(result.message ?? "顶部视频保存失败。");
       return;
@@ -643,16 +761,60 @@ export function DiaryDesk() {
     setActiveTrackIndex(0);
   }
 
+  async function importQqPlaylist(playlistUrl: string) {
+    setStatus("正在识别 QQ 音乐歌单...");
+    const response = await fetch("/api/music", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ importSource: "qq-playlist", playlistUrl })
+    });
+    const result = (await readJsonSafely(response)) as PlaylistImportResult;
+    if (!response.ok) {
+      setStatus(result.message ?? "QQ 音乐歌单识别失败，请检查链接。");
+      return;
+    }
+    const imported = result.importedCount ?? 0;
+    const skipped = result.skippedCount ?? 0;
+    const updated = result.updatedCount ?? 0;
+    setStatus(`已导入 ${imported} 首 QQ 音乐歌曲${updated ? `，修复 ${updated} 首旧链接` : ""}${skipped ? `，跳过 ${skipped} 首已存在歌曲` : ""}。`);
+    await refreshCms();
+    setActiveTrackIndex(0);
+    setIsPlaying(true);
+  }
+
   async function deleteMusicTrack(track: CmsTrack) {
-    if (!track.id || track.id.startsWith("fallback-")) return;
+    if (!track.id || track.id === emptyTrack.id || track.id.startsWith("fallback-")) return;
     if (!window.confirm(`删除歌曲“${track.title}”吗？`)) return;
-    const response = await fetch(`/api/music?id=${encodeURIComponent(track.id)}`, { method: "DELETE" });
-    const result = await response.json();
+    const response = await fetch("/api/music", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [track.id] })
+    });
+    const result = await readJsonSafely(response) as { message?: string };
     if (!response.ok) {
       setStatus(result.message ?? "歌曲删除失败。");
       return;
     }
     setStatus("歌曲已删除。");
+    setActiveTrackIndex(0);
+    await refreshCms();
+  }
+
+  async function deleteMusicTracks(trackIds: string[]) {
+    const ids = trackIds.filter(Boolean);
+    if (!ids.length) return;
+    if (!window.confirm(`删除选中的 ${ids.length} 首歌曲吗？`)) return;
+    const response = await fetch("/api/music", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids })
+    });
+    const result = await readJsonSafely(response) as { deletedCount?: number; message?: string };
+    if (!response.ok) {
+      setStatus(result.message ?? "批量删除歌曲失败。");
+      return;
+    }
+    setStatus(`已删除 ${result.deletedCount ?? ids.length} 首歌曲。`);
     setActiveTrackIndex(0);
     await refreshCms();
   }
@@ -705,9 +867,34 @@ export function DiaryDesk() {
     await refreshCms();
   }
 
+  async function saveMobileProfile(draft: ProfileEditDraft) {
+    if (!currentUser) return;
+    const response = await fetch("/api/users", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: currentUser.id,
+        requesterId: currentUser.id,
+        displayName: draft.displayName,
+        avatarUrl: draft.avatarUrl,
+        backgroundUrl: encodeProfileBackground(draft.backgroundUrl, draft.backgroundCropX, draft.backgroundCropY, draft.backgroundZoom),
+        bio: currentUser.bio ?? "",
+        profileSections: currentUser.profileSections ?? ""
+      })
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      setStatus(result.message ?? "个人资料保存失败。");
+      return;
+    }
+    updateUser(result.user);
+    setMobileProfileDraft(null);
+    setStatus("个人资料已更新。");
+  }
+
   const displayVideo: CmsVideo = cmsData?.video ?? videoPick;
   const displaySchedules = cmsData?.schedules?.length ? cmsData.schedules : scheduleItems;
-  const displayTracks = cmsData?.musicTracks?.length ? cmsData.musicTracks : musicTracks;
+  const displayTracks = cmsData?.musicTracks ? cmsData.musicTracks : musicTracks;
   const displayEntries = cmsData?.entries?.length ? cmsData.entries : [...offlineEntries, ...onlineEntries];
   const displayGoals = cmsData?.goals ?? [];
   const displaySkills = cmsData?.skills?.length ? cmsData.skills : skills.map((skill, index) => ({
@@ -718,12 +905,54 @@ export function DiaryDesk() {
   const displayOfflineEntries = displayEntries.filter((entry) => String(entry.type).toUpperCase() === "OFFLINE");
   const displayOnlineEntries = displayEntries.filter((entry) => String(entry.type).toUpperCase() === "ONLINE");
   const displayNoteEntries = displayEntries.filter((entry) => String(entry.type).toUpperCase() === "NOTE");
-  const activeTrack = displayTracks[activeTrackIndex % displayTracks.length] ?? musicTracks[0];
+  const activeTrack = displayTracks.length ? displayTracks[activeTrackIndex % displayTracks.length] : emptyTrack;
   const pageMeta = pageTitles[activePage];
+
+  useEffect(() => {
+    if (displayTracks.length && activeTrackIndex >= displayTracks.length) {
+      setActiveTrackIndex(0);
+    }
+  }, [activeTrackIndex, displayTracks.length]);
+
+  function getNextTrackIndex(currentIndex: number) {
+    if (!displayTracks.length) return 0;
+    if (playbackMode === "shuffle" && displayTracks.length > 1) {
+      let nextIndex = Math.floor(Math.random() * displayTracks.length);
+      if (nextIndex === currentIndex) nextIndex = (nextIndex + 1) % displayTracks.length;
+      return nextIndex;
+    }
+    return (currentIndex + 1) % displayTracks.length;
+  }
+
+  function getEndedTrackIndex(currentIndex: number) {
+    if (playbackMode === "single") return currentIndex;
+    return getNextTrackIndex(currentIndex);
+  }
+
+  function getPreviousTrackIndex(currentIndex: number) {
+    if (!displayTracks.length) return 0;
+    return (currentIndex - 1 + displayTracks.length) % displayTracks.length;
+  }
 
   const pageContent = useMemo(() => {
     if (activePage === "home") {
       return <HomePanel entries={displayEntries} onNewEntry={openNewEntry} />;
+    }
+    if (activePage === "memories") {
+      return (
+        <MemoriesPanel
+          canDelete={isAdmin}
+          offlineEntries={displayOfflineEntries}
+          onlineEntries={displayOnlineEntries}
+          onDelete={deleteEntry}
+          onEdit={(entry) => setEntryDraft(draftFromEntry(entry))}
+          onNew={openNewEntry}
+          onOpen={setSelectedEntry}
+        />
+      );
+    }
+    if (activePage === "profile") {
+      return <MobileProfilePanel currentUser={currentUser} entries={displayEntries} skills={displaySkills} onEditProfile={() => currentUser && setMobileProfileDraft(profileEditDraftFromUser(currentUser))} onLogin={() => setAuthOpen(true)} />;
     }
     if (activePage === "offline") {
       return (
@@ -781,13 +1010,17 @@ export function DiaryDesk() {
       <NotesPanel
         canDelete={isAdmin}
         entries={displayNoteEntries}
+        goals={displayGoals}
         onDelete={deleteEntry}
         onEdit={(entry) => setEntryDraft(draftFromEntry(entry))}
+        onGoalEdit={(goal) => setGoalDraft(draftFromGoal(goal))}
+        onGoalNew={() => setGoalDraft(emptyGoalDraft)}
         onNew={() => openNewEntry("NOTE")}
         onOpen={setSelectedEntry}
       />
     );
-  }, [activePage, displayEntries, displayGoals, displayNoteEntries, displayOfflineEntries, displayOnlineEntries, displaySkills, isAdmin]);
+  }, [activePage, currentUser, displayEntries, displayGoals, displayNoteEntries, displayOfflineEntries, displayOnlineEntries, displaySkills, isAdmin]);
+
 
   return (
     <main className="desk-app">
@@ -810,38 +1043,50 @@ export function DiaryDesk() {
         </div>
       </header>
 
+      {activePage === "home" ? (
+        <MobileHomeHeader
+          currentUser={currentUser}
+          isAdmin={isAdmin}
+          onLogin={() => setAuthOpen(true)}
+          onSettings={() => setSettingsOpen(true)}
+          onSkills={() => setActivePage("skills")}
+        />
+      ) : null}
+
       {status ? <div className="desk-status">{status}</div> : null}
 
-      <section className="video-command" aria-label="视频与艺人行程">
-        <div className="video-copy">
-          <span className="eyebrow">Favorite Video</span>
-          <h1 onClick={() => setVideoDraft(videoDraftFromVideo(displayVideo))}>{displayVideo.title}</h1>
-          <p onClick={() => setVideoDraft(videoDraftFromVideo(displayVideo))}>{displayVideo.reason}</p>
-          <div className="video-facts">
-            <button onClick={() => setVideoDraft(videoDraftFromVideo(displayVideo))} type="button">{displayVideo.publishDate}</button>
-            <button onClick={() => setVideoDraft(videoDraftFromVideo(displayVideo))} type="button">{displayVideo.artist}</button>
+      {activePage === "home" ? (
+        <section className="video-command" aria-label="视频与艺人行程">
+          <div className="video-copy">
+            <span className="eyebrow">Favorite Video</span>
+            <h1 onClick={() => setVideoDraft(videoDraftFromVideo(displayVideo))}>{displayVideo.title}</h1>
+            <p onClick={() => setVideoDraft(videoDraftFromVideo(displayVideo))}>{displayVideo.reason}</p>
+            <div className="video-facts">
+              <button onClick={() => setVideoDraft(videoDraftFromVideo(displayVideo))} type="button">{displayVideo.publishDate}</button>
+              <button onClick={() => setVideoDraft(videoDraftFromVideo(displayVideo))} type="button">{displayVideo.artist}</button>
+            </div>
           </div>
-        </div>
-        <div className="video-frame">
-          <div className="video-screen" onClick={() => setVideoDraft(videoDraftFromVideo(displayVideo))}>
-            <VideoSpotlightMedia video={displayVideo} />
+          <div className="video-frame">
+            <div className="video-screen" onClick={() => setVideoDraft(videoDraftFromVideo(displayVideo))}>
+              <VideoSpotlightMedia video={displayVideo} />
+            </div>
+            <div className="video-control-strip"><span /><span /><span /></div>
           </div>
-          <div className="video-control-strip"><span /><span /><span /></div>
-        </div>
-        <ScheduleTimeline
-          schedules={displaySchedules}
-          onEdit={(schedule) => setScheduleDraft(draftFromSchedule(schedule))}
-          onNew={() => setScheduleDraft({ ...emptyScheduleDraft, dateText: new Date().toLocaleDateString("zh-CN") })}
-          onViewAll={() => setScheduleListOpen(true)}
-        />
-      </section>
+          <ScheduleTimeline
+            schedules={displaySchedules}
+            onEdit={(schedule) => setScheduleDraft(draftFromSchedule(schedule))}
+            onNew={() => setScheduleDraft({ ...emptyScheduleDraft, dateText: new Date().toLocaleDateString("zh-CN") })}
+            onViewAll={() => setScheduleListOpen(true)}
+          />
+        </section>
+      ) : null}
 
       <section className="workspace">
         <aside className="page-nav" aria-label="页面导航">
           <nav>
             {navItems.map(({ id, label, Icon }) => (
               <button className={activePage === id ? "active" : ""} key={id} onClick={() => setActivePage(id)} type="button">
-                <Icon size={18} /><span>{label}</span>
+                <span className="nav-button-icon"><Icon size={18} strokeWidth={1.65} /></span><span>{label}</span>
               </button>
             ))}
           </nav>
@@ -865,10 +1110,27 @@ export function DiaryDesk() {
 
       <MiniMusicDock
         activeTrack={activeTrack}
+        activeTrackIndex={activeTrackIndex}
         isFloating={settings.musicFloating}
         isPlaying={isPlaying}
-        onNext={() => setActiveTrackIndex((index) => (index + 1) % displayTracks.length)}
+        onModeChange={setPlaybackMode}
+        trackCount={displayTracks.length}
+        playbackMode={playbackMode}
+        onEnded={() => setActiveTrackIndex((index) => getEndedTrackIndex(index))}
+        onNext={() => setActiveTrackIndex((index) => getNextTrackIndex(index))}
+        onPrevious={() => setActiveTrackIndex((index) => getPreviousTrackIndex(index))}
         onToggle={() => setIsPlaying((value) => !value)}
+      />
+      <MobileMusicWidget
+        activeTrack={activeTrack}
+        activeTrackIndex={activeTrackIndex}
+        isPlaying={isPlaying}
+        onModeChange={setPlaybackMode}
+        onNext={() => setActiveTrackIndex((index) => getNextTrackIndex(index))}
+        onPrevious={() => setActiveTrackIndex((index) => getPreviousTrackIndex(index))}
+        onToggle={() => setIsPlaying((value) => !value)}
+        playbackMode={playbackMode}
+        trackCount={displayTracks.length}
       />
 
       {entryDraft ? <EntryModal draft={entryDraft} isLoggedIn={Boolean(currentUser)} onClose={() => setEntryDraft(null)} onLogin={() => setAuthOpen(true)} onSave={saveEntry} onUpdate={setEntryDraft} /> : null}
@@ -878,21 +1140,130 @@ export function DiaryDesk() {
       {goalDraft ? <GoalModal draft={goalDraft} onClose={() => setGoalDraft(null)} onSave={saveGoal} onUpdate={setGoalDraft} /> : null}
       {achievementDraft ? <AchievementModal draft={achievementDraft} onClose={() => setAchievementDraft(null)} onSave={saveAchievement} onUpdate={setAchievementDraft} /> : null}
       {skillDraft ? <SkillModal draft={skillDraft} onClose={() => setSkillDraft(null)} onSave={saveSkill} onUpdate={setSkillDraft} /> : null}
-      {settingsOpen ? <SettingsModal activeTrack={activeTrack} onDeleteTrack={deleteMusicTrack} onSaveMusic={saveMusicTrack} settings={settings} onClose={() => setSettingsOpen(false)} onSave={saveSettings} /> : null}
+      {settingsOpen ? <SettingsModal activeTrack={activeTrack} tracks={displayTracks} onDeleteTrack={deleteMusicTrack} onDeleteTracks={deleteMusicTracks} onImportQqPlaylist={importQqPlaylist} onSelectTrack={(track) => { setActiveTrackIndex(Math.max(displayTracks.findIndex((item) => item.id === track.id), 0)); setIsPlaying(true); }} onSaveMusic={saveMusicTrack} settings={settings} onClose={() => setSettingsOpen(false)} onSave={saveSettings} /> : null}
+      {mobileProfileDraft && currentUser ? <MobileProfileEditModal currentUser={currentUser} draft={mobileProfileDraft} onClose={() => setMobileProfileDraft(null)} onSave={saveMobileProfile} onUpdate={setMobileProfileDraft} /> : null}
       {scheduleListOpen ? (
         <ScheduleListModal schedules={displaySchedules} onClose={() => setScheduleListOpen(false)} onEdit={(schedule) => { setScheduleListOpen(false); setScheduleDraft(draftFromSchedule(schedule)); }} />
       ) : null}
       {authOpen ? <AuthModal currentUser={currentUser} onClose={() => setAuthOpen(false)} onStatus={setStatus} onUser={(user) => { updateUser(user); setAuthOpen(false); }} /> : null}
+
+      <MobileBottomNav activePage={activePage} onNew={() => openNewEntry()} onSelect={setActivePage} />
     </main>
   );
 }
 
+function MobileHomeHeader({
+  currentUser,
+  isAdmin,
+  onLogin,
+  onSettings,
+  onSkills
+}: {
+  currentUser: CurrentUser | null;
+  isAdmin: boolean;
+  onLogin: () => void;
+  onSettings: () => void;
+  onSkills: () => void;
+}) {
+  const displayName = currentUser?.displayName ?? "还没有登录";
+  const username = currentUser?.username ? `@${currentUser.username}` : "点击我的登录后开始记录";
+
+  return (
+    <section className="mobile-profile-strip">
+      <button className="mobile-profile-main" onClick={currentUser ? undefined : onLogin} type="button">
+        <span className="mobile-avatar">
+          {currentUser?.avatarUrl ? <img alt={displayName} src={currentUser.avatarUrl} /> : <Heart size={28} />}
+        </span>
+        <span className="mobile-profile-copy">
+          <strong>{displayName}{isAdmin ? " · 管理员" : ""}</strong>
+          <small>{username}</small>
+        </span>
+      </button>
+      <div className="mobile-profile-actions">
+        <button onClick={onSkills} type="button"><Sparkles size={17} />个人技能</button>
+        <button aria-label="设置" onClick={onSettings} type="button"><Settings size={18} /></button>
+      </div>
+    </section>
+  );
+}
+
+function MobileBottomNav({
+  activePage,
+  onNew,
+  onSelect
+}: {
+  activePage: PageId;
+  onNew: () => void;
+  onSelect: (page: PageId) => void;
+}) {
+  const items: Array<{ id: PageId; label: string; Icon: LucideIcon }> = [
+    { id: "home", label: "首页", Icon: Home },
+    { id: "memories", label: "回忆", Icon: CalendarDays },
+    { id: "notes", label: "碎碎念", Icon: Heart },
+    { id: "profile", label: "我的", Icon: ShieldCheck }
+  ];
+
+  return (
+    <nav className="mobile-bottom-nav" aria-label="底部导航">
+      {items.slice(0, 2).map(({ id, label, Icon }) => (
+        <button className={activePage === id ? "active" : ""} key={id} onClick={() => onSelect(id)} type="button">
+          <Icon size={18} />
+          <span>{label}</span>
+        </button>
+      ))}
+      <button className="mobile-compose-button" onClick={onNew} type="button" aria-label="写一条">
+        <Plus size={24} strokeWidth={2.4} />
+      </button>
+      {items.slice(2).map(({ id, label, Icon }) => (
+        <button className={activePage === id ? "active" : ""} key={id} onClick={() => onSelect(id)} type="button">
+          <Icon size={18} />
+          <span>{label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 function BackgroundVideo({ source }: { source: string }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const normalizedSource = normalizeExternalUrl(source);
   const embedUrl = getEmbeddableVideoUrl(normalizedSource, true);
+
+  function playBackgroundVideo() {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = true;
+    video.loop = true;
+    void video.play().catch(() => undefined);
+  }
+
+  function restartBackgroundVideo() {
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = 0;
+    playBackgroundVideo();
+  }
+
+  useEffect(() => {
+    playBackgroundVideo();
+  }, [normalizedSource]);
+
   if (!source) return null;
   if (isVideoSource(normalizedSource)) {
-    return <video className="kpop-bg-video" src={normalizedSource} autoPlay muted loop playsInline />;
+    return (
+      <video
+        ref={videoRef}
+        className="kpop-bg-video"
+        src={normalizedSource}
+        autoPlay
+        muted
+        loop
+        playsInline
+        preload="auto"
+        onCanPlay={playBackgroundVideo}
+        onEnded={restartBackgroundVideo}
+      />
+    );
   }
   if (embedUrl) {
     return <iframe className="kpop-bg-video embed" src={embedUrl} title="背景视频" allow="autoplay; encrypted-media; picture-in-picture" />;
@@ -929,15 +1300,15 @@ function MediaPreview({ alt, className, source }: { alt: string; className: stri
   const embedUrl = getEmbeddableVideoUrl(normalizedSource);
   if (!normalizedSource) return null;
   if (isVideoSource(normalizedSource)) {
-    return <div className={className}><video controls src={normalizedSource} /></div>;
+    return <div className={`${className} media-frame media-frame-video`}><video controls src={normalizedSource} /></div>;
   }
   if (isImageSource(normalizedSource) || normalizedSource.startsWith("/uploads/")) {
-    return <div className={className}><img alt={alt} src={normalizedSource} /></div>;
+    return <div className={`${className} media-frame media-frame-image`}><img alt={alt} src={normalizedSource} /></div>;
   }
   if (embedUrl) {
-    return <div className={className}><iframe src={embedUrl} title={alt} allow="autoplay; encrypted-media; picture-in-picture" allowFullScreen /></div>;
+    return <div className={`${className} media-frame media-frame-embed`}><iframe src={embedUrl} title={alt} allow="autoplay; encrypted-media; picture-in-picture" allowFullScreen /></div>;
   }
-  return <div className={className}><ResolvedEmbedFrame source={normalizedSource} title={alt} fallback={<a className="entry-link-card" href={normalizedSource} onClick={(event) => event.stopPropagation()} rel="noreferrer" target="_blank"><Link size={15} />打开链接</a>} /></div>;
+  return <div className={`${className} media-frame media-frame-embed`}><ResolvedEmbedFrame source={normalizedSource} title={alt} fallback={<a className="entry-link-card" href={normalizedSource} onClick={(event) => event.stopPropagation()} rel="noreferrer" target="_blank"><Link size={15} />打开链接</a>} /></div>;
 }
 
 function ResolvedEmbedFrame({ autoplay = false, className, fallback = null, source, title }: { autoplay?: boolean; className?: string; fallback?: ReactNode; source: string; title: string }) {
@@ -950,7 +1321,7 @@ function ResolvedEmbedFrame({ autoplay = false, className, fallback = null, sour
     setEmbedUrl(directEmbed);
     if (!normalizedSource || directEmbed || normalizedSource.startsWith("/uploads/")) return;
 
-    fetch(`/api/media/resolve?url=${encodeURIComponent(normalizedSource)}`, { cache: "no-store" })
+    fetch(`/api/media/resolve?url=${encodeURIComponent(normalizedSource)}&autoplay=${autoplay ? 1 : 0}`, { cache: "no-store" })
       .then((response) => response.json())
       .then((result: { embedUrl?: string }) => {
         if (!ignore) setEmbedUrl(result.embedUrl ?? "");
@@ -1009,6 +1380,10 @@ function HomePanel({ entries, onNewEntry }: { entries: CmsEntry[]; onNewEntry: (
     ONLINE: entries.filter((entry) => String(entry.type).toUpperCase() === "ONLINE").length,
     NOTE: entries.filter((entry) => String(entry.type).toUpperCase() === "NOTE").length
   };
+  const scatteredEntries = [
+    ...entries.filter((entry) => entry.mediaUrl),
+    ...entries.filter((entry) => !entry.mediaUrl)
+  ].slice(0, 6);
   return (
     <div className="home-panel varied-home">
       <div className="stat-board">
@@ -1019,13 +1394,214 @@ function HomePanel({ entries, onNewEntry }: { entries: CmsEntry[]; onNewEntry: (
       <article className="quote-panel">
         <Mic2 size={24} />
         <h3>追星不是逃离生活，是给生活多装一盏很漂亮的灯。</h3>
-        <p>现在可以真正写东西了：选择分类、保存到数据库，再回来慢慢修改。</p>
+        <p>现在可以真正写东西了：选择分类写下你的小确幸吧</p>
         <div className="quote-actions">
           <button onClick={() => onNewEntry("OFFLINE")} type="button">写线下</button>
           <button onClick={() => onNewEntry("ONLINE")} type="button">写线上</button>
           <button onClick={() => onNewEntry("NOTE")} type="button">写碎碎念</button>
         </div>
       </article>
+      <div className="mobile-memory-scatter">
+        {scatteredEntries.map((entry, index) => (
+          <article className={`mobile-scatter-card tone-${index % 3}`} key={entry.id}>
+            <span>{String(entry.type).toUpperCase() === "OFFLINE" ? "线下日记" : String(entry.type).toUpperCase() === "ONLINE" ? "线上日记" : "碎碎念"}</span>
+            <strong>{entry.title}</strong>
+            <MediaPreview alt={entry.title} className="mobile-scatter-media" source={entry.mediaUrl} />
+            <p>{entry.summary}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MemoriesPanel({
+  canDelete,
+  offlineEntries,
+  onlineEntries,
+  onDelete,
+  onEdit,
+  onNew,
+  onOpen
+}: {
+  canDelete: boolean;
+  offlineEntries: CmsEntry[];
+  onlineEntries: CmsEntry[];
+  onDelete: (entry: CmsEntry) => void;
+  onEdit: (entry: CmsEntry) => void;
+  onNew: (type: EntryType) => void;
+  onOpen: (entry: CmsEntry) => void;
+}) {
+  const [activeMemoryType, setActiveMemoryType] = useState<"offline" | "online">("offline");
+  const activeEntries = activeMemoryType === "offline" ? offlineEntries : onlineEntries;
+  const activeNewType: EntryType = activeMemoryType === "offline" ? "OFFLINE" : "ONLINE";
+  const activeEmptyText = activeMemoryType === "offline" ? "还没有线下日记。" : "还没有线上日记。";
+
+  return (
+    <div className="memories-panel">
+      <nav className="memory-switcher" aria-label="回忆分类">
+        <button className={activeMemoryType === "offline" ? "active" : ""} onClick={() => setActiveMemoryType("offline")} type="button">线下日记</button>
+        <button className={activeMemoryType === "online" ? "active" : ""} onClick={() => setActiveMemoryType("online")} type="button">线上日记</button>
+      </nav>
+      <section>
+        <div className="memory-section-head">
+          <div><span className="eyebrow">{activeMemoryType === "offline" ? "Offline" : "Online"}</span><h3>{activeMemoryType === "offline" ? "线下日记" : "线上日记"}</h3></div>
+          <button className="ghost-button" onClick={() => onNew(activeNewType)} type="button"><Plus size={16} />新增</button>
+        </div>
+        {activeEntries.length ? (
+          <div className="memory-card-list">
+            {activeEntries.map((entry) => <MemoryEntryCard canDelete={canDelete} entry={entry} key={entry.id} onDelete={onDelete} onEdit={onEdit} onOpen={onOpen} />)}
+          </div>
+        ) : <EmptyState compact text={activeEmptyText} onNew={() => onNew(activeNewType)} />}
+      </section>
+    </div>
+  );
+}
+
+function MemoryEntryCard({ canDelete, entry, onDelete, onEdit, onOpen }: { canDelete: boolean; entry: CmsEntry; onDelete: (entry: CmsEntry) => void; onEdit: (entry: CmsEntry) => void; onOpen: (entry: CmsEntry) => void }) {
+  return (
+    <article className="memory-entry-card" onClick={() => onOpen(entry)}>
+      <span>{[entry.dateText ?? entry.date, entry.location].filter(Boolean).join(" / ") || "未填写日期"}</span>
+      <h3>{entry.title}</h3>
+      <p>{entry.summary}</p>
+      <div className="entry-actions">
+        <button onClick={(event) => { event.stopPropagation(); onEdit(entry); }} type="button"><PencilLine size={15} />编辑</button>
+        {canDelete ? <button onClick={(event) => { event.stopPropagation(); onDelete(entry); }} type="button"><Trash2 size={15} />删除</button> : null}
+      </div>
+    </article>
+  );
+}
+
+function MobileProfilePanel({
+  currentUser,
+  entries,
+  skills,
+  onEditProfile,
+  onLogin
+}: {
+  currentUser: CurrentUser | null;
+  entries: CmsEntry[];
+  skills: CmsSkill[];
+  onEditProfile: () => void;
+  onLogin: () => void;
+}) {
+  const ownEntries = currentUser ? entries.filter((entry) => entry.author?.id === currentUser.id) : [];
+  const displayName = currentUser?.displayName ?? "我的主页";
+  const username = currentUser?.username ? `@${currentUser.username}` : "登录后展示你的个人主页";
+  const profileCover = parseProfileBackground(currentUser?.backgroundUrl);
+
+  return (
+    <div className="mobile-profile-page">
+      <section className="mobile-profile-card">
+        <div className="mobile-profile-cover" style={profileBackgroundStyle(currentUser?.backgroundUrl)}>
+          {profileCover.url && isVideoSource(profileCover.url) ? <video src={profileCover.url} autoPlay muted loop playsInline style={{ objectPosition: `${profileCover.x}% ${profileCover.y}%` }} /> : null}
+        </div>
+        <span className="mobile-avatar large">
+          {currentUser?.avatarUrl ? <img alt={displayName} src={currentUser.avatarUrl} /> : <Heart size={34} />}
+        </span>
+        <div>
+          <h3>{displayName}</h3>
+          <p>{username}</p>
+          {currentUser?.bio ? <small>{currentUser.bio}</small> : null}
+        </div>
+        {currentUser ? (
+          <button className="save-button mobile-profile-edit" onClick={onEditProfile} type="button"><PencilLine size={16} />修改资料</button>
+        ) : (
+          <button className="save-button mobile-profile-edit" onClick={onLogin} type="button"><LogIn size={17} />登录</button>
+        )}
+      </section>
+      <section className="mobile-profile-section">
+        <div className="memory-section-head"><div><span className="eyebrow">Skills</span><h3>个人技能</h3></div></div>
+        <div className="mobile-skill-grid">
+          {skills.slice(0, 4).map((skill) => (
+            <article key={skill.id ?? skill.name}>
+              <strong>{skill.name}</strong>
+              <span>{skill.level}</span>
+              <p>{skill.copy}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+      <section className="mobile-profile-section">
+        <div className="memory-section-head"><div><span className="eyebrow">Archive</span><h3>主页内容</h3></div></div>
+        <div className="memory-card-list">
+          {(ownEntries.length ? ownEntries : entries.slice(0, 3)).map((entry) => (
+            <article className="memory-entry-card mobile-profile-post" key={entry.id}>
+              <span>{String(entry.type).toUpperCase() === "OFFLINE" ? "线下" : String(entry.type).toUpperCase() === "ONLINE" ? "线上" : "碎碎念"}</span>
+              <h3>{entry.title}</h3>
+              <MediaPreview alt={entry.title} className="mobile-post-media" source={entry.mediaUrl} />
+              <p>{entry.summary}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function MobileProfileEditModal({
+  currentUser,
+  draft,
+  onClose,
+  onSave,
+  onUpdate
+}: {
+  currentUser: CurrentUser;
+  draft: ProfileEditDraft;
+  onClose: () => void;
+  onSave: (draft: ProfileEditDraft) => void;
+  onUpdate: (draft: ProfileEditDraft) => void;
+}) {
+  function updateField(field: keyof ProfileEditDraft, value: string) {
+    onUpdate({ ...draft, [field]: value });
+  }
+  function updateCrop(field: "backgroundCropX" | "backgroundCropY" | "backgroundZoom", value: number) {
+    onUpdate({ ...draft, [field]: value });
+  }
+  const cleanBackgroundUrl = stripProfileCrop(draft.backgroundUrl);
+
+  return (
+    <div className="modal-backdrop mobile-profile-edit-backdrop" role="dialog" aria-modal="true">
+      <section className="mobile-profile-edit-sheet">
+        <div className="modal-head">
+          <div>
+            <span className="eyebrow">Profile</span>
+            <h2>修改个人资料</h2>
+          </div>
+          <button className="icon-button" onClick={onClose} type="button"><X size={18} /></button>
+        </div>
+        <div className="mobile-profile-edit-preview">
+          <div className="mobile-profile-cover" style={profileBackgroundStyle(cleanBackgroundUrl, draft)}>
+            {cleanBackgroundUrl && isVideoSource(cleanBackgroundUrl) ? <video src={cleanBackgroundUrl} autoPlay muted loop playsInline style={{ objectPosition: `${draft.backgroundCropX}% ${draft.backgroundCropY}%` }} /> : null}
+          </div>
+          <span className="mobile-avatar large">
+            {draft.avatarUrl ? <img alt={draft.displayName} src={draft.avatarUrl} /> : <Heart size={34} />}
+          </span>
+          <div>
+            <h3>{draft.displayName || currentUser.displayName}</h3>
+            <p>@{currentUser.username}</p>
+          </div>
+        </div>
+        <form onSubmit={(event) => { event.preventDefault(); onSave(draft); }}>
+          <div className="writer-grid mobile-profile-edit-form">
+            <TextInput required wide label="昵称" value={draft.displayName} onChange={(value) => updateField("displayName", value)} placeholder="页面里显示的名字" />
+            <MediaSourceInput accept="image/*" wide label="头像" value={draft.avatarUrl} onChange={(value) => updateField("avatarUrl", value)} />
+            <MediaSourceInput accept="image/*,video/*" wide label="个人背景" value={draft.backgroundUrl} onChange={(value) => updateField("backgroundUrl", value)} />
+            {cleanBackgroundUrl ? (
+              <div className="profile-crop-controls wide">
+                <span>背景裁剪</span>
+                <label><small>左右</small><input type="range" min="0" max="100" value={draft.backgroundCropX} onChange={(event) => updateCrop("backgroundCropX", Number(event.target.value))} /></label>
+                <label><small>上下</small><input type="range" min="0" max="100" value={draft.backgroundCropY} onChange={(event) => updateCrop("backgroundCropY", Number(event.target.value))} /></label>
+                {!isVideoSource(cleanBackgroundUrl) ? <label><small>缩放</small><input type="range" min="1" max="2.4" step="0.05" value={draft.backgroundZoom} onChange={(event) => updateCrop("backgroundZoom", Number(event.target.value))} /></label> : null}
+              </div>
+            ) : null}
+          </div>
+          <div className="modal-actions">
+            <button className="ghost-button" onClick={onClose} type="button">取消</button>
+            <button className="save-button" type="submit"><Save size={17} />保存资料</button>
+          </div>
+        </form>
+      </section>
     </div>
   );
 }
@@ -1114,20 +1690,55 @@ function SkillModal({ draft, onClose, onSave, onUpdate }: { draft: SkillDraft; o
   );
 }
 
-function NotesPanel({ canDelete, entries, onDelete, onEdit, onNew, onOpen }: { canDelete: boolean; entries: CmsEntry[]; onDelete: (entry: CmsEntry) => void; onEdit: (entry: CmsEntry) => void; onNew: () => void; onOpen: (entry: CmsEntry) => void }) {
+function NotesPanel({
+  canDelete,
+  entries,
+  goals,
+  onDelete,
+  onEdit,
+  onGoalEdit,
+  onGoalNew,
+  onNew,
+  onOpen
+}: {
+  canDelete: boolean;
+  entries: CmsEntry[];
+  goals: CmsGoal[];
+  onDelete: (entry: CmsEntry) => void;
+  onEdit: (entry: CmsEntry) => void;
+  onGoalEdit: (goal: CmsGoal) => void;
+  onGoalNew: () => void;
+  onNew: () => void;
+  onOpen: (entry: CmsEntry) => void;
+}) {
   const hasEntries = entries.length > 0;
   return (
-    <div className="note-board">
-      {hasEntries
-        ? entries.map((entry) => <article className="note-paper lift-card" key={entry.id} onClick={() => onOpen(entry)}><EntryBody canDelete={canDelete} entry={entry} onDelete={onDelete} onEdit={onEdit} /></article>)
-        : notes.map(({ title, body, Icon }) => <article className="note-paper lift-card" key={title}><span className="icon-box sage"><Icon size={18} /></span><h3>{title}</h3><p>{body}</p></article>)}
-      {!hasEntries ? <EmptyState compact text="这些是示例碎碎念。点这里写你自己的。" onNew={onNew} /> : null}
+    <div className="notes-with-goals">
+      <section className="notes-goals-section">
+        <div className="memory-section-head">
+          <div><span className="eyebrow">Goals</span><h3>小目标</h3></div>
+          <button className="ghost-button" onClick={onGoalNew} type="button"><Plus size={16} />新目标</button>
+        </div>
+        <GoalsPanel rows={goals} onEdit={onGoalEdit} onNew={onGoalNew} />
+      </section>
+      <section className="notes-list-section">
+        <div className="memory-section-head">
+          <div><span className="eyebrow">Notes</span><h3>碎碎念</h3></div>
+          <button className="ghost-button" onClick={onNew} type="button"><Plus size={16} />新碎碎念</button>
+        </div>
+        <div className="note-board">
+          {hasEntries
+            ? entries.map((entry) => <article className="note-paper lift-card" key={entry.id} onClick={() => onOpen(entry)}><EntryBody canDelete={canDelete} entry={entry} onDelete={onDelete} onEdit={onEdit} /></article>)
+            : notes.map(({ title, body, Icon }) => <article className="note-paper lift-card" key={title}><span className="icon-box sage"><Icon size={18} /></span><h3>{title}</h3><p>{body}</p></article>)}
+          {!hasEntries ? <EmptyState compact text="这些是示例碎碎念。点这里写你自己的。" onNew={onNew} /> : null}
+        </div>
+      </section>
     </div>
   );
 }
 
 function EmptyState({ compact = false, text, onNew }: { compact?: boolean; text: string; onNew: () => void }) {
-  return <article className={compact ? "empty-state compact" : "empty-state"}><Sparkles size={18} /><p>{text}</p><button onClick={onNew} type="button"><Plus size={16} />添加</button></article>;
+  return <article className={compact ? "empty-state compact" : "empty-state"}><Sparkles size={18} /><p>{text}</p><button onClick={onNew} type="button">添加</button></article>;
 }
 
 function EntryBody({ canDelete, entry, onDelete, onEdit }: { canDelete: boolean; entry: CmsEntry; onDelete: (entry: CmsEntry) => void; onEdit: (entry: CmsEntry) => void }) {
@@ -1304,20 +1915,37 @@ function SettingsModal({
   activeTrack,
   onClose,
   onDeleteTrack,
+  onDeleteTracks,
+  onImportQqPlaylist,
+  onSelectTrack,
   onSave,
   onSaveMusic,
-  settings
+  settings,
+  tracks
 }: {
   activeTrack: CmsTrack;
   onClose: () => void;
   onDeleteTrack: (track: CmsTrack) => void;
+  onDeleteTracks: (trackIds: string[]) => Promise<void>;
+  onImportQqPlaylist: (playlistUrl: string) => Promise<void>;
+  onSelectTrack: (track: CmsTrack) => void;
   onSave: (settings: AppSettings) => void;
   onSaveMusic: (draft: MusicDraft) => Promise<void>;
   settings: AppSettings;
+  tracks: CmsTrack[];
 }) {
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [musicDraft, setMusicDraft] = useState<MusicDraft>(emptyMusicDraft);
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const [savingMusic, setSavingMusic] = useState(false);
+  const [playlistUrl, setPlaylistUrl] = useState("");
+  const [importingPlaylist, setImportingPlaylist] = useState(false);
+  const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
+  const selectableTrackIds = tracks
+    .map((track) => track.id)
+    .filter((id) => Boolean(id && !id.startsWith("fallback-")));
+  const selectedCount = selectedTrackIds.length;
+  const allSelected = selectableTrackIds.length > 0 && selectableTrackIds.every((id) => selectedTrackIds.includes(id));
 
   function updateMusicDraft(field: keyof MusicDraft, value: string) {
     const nextDraft = { ...musicDraft, [field]: value };
@@ -1337,6 +1965,28 @@ function SettingsModal({
     setMusicDraft(emptyMusicDraft);
   }
 
+  async function handlePlaylistImport(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setImportingPlaylist(true);
+    await onImportQqPlaylist(playlistUrl);
+    setImportingPlaylist(false);
+    setPlaylistUrl("");
+  }
+
+  function toggleTrackSelection(trackId: string) {
+    setSelectedTrackIds((ids) => ids.includes(trackId) ? ids.filter((id) => id !== trackId) : [...ids, trackId]);
+  }
+
+  function toggleAllTracks() {
+    setSelectedTrackIds(allSelected ? [] : selectableTrackIds);
+  }
+
+  async function handleDeleteSelected() {
+    const ids = selectedTrackIds.filter((id) => selectableTrackIds.includes(id));
+    await onDeleteTracks(ids);
+    setSelectedTrackIds([]);
+  }
+
   return (
     <ModalFrame eyebrow="Settings" title="页面设置" onClose={onClose}>
       <form onSubmit={(event) => { event.preventDefault(); onSave(draft); }}>
@@ -1349,14 +1999,6 @@ function SettingsModal({
             onChange={(value) => setDraft({ ...draft, backgroundVideoUrl: value })}
             placeholder="上传本地视频，或填入 Bilibili / YouTube / mp4 链接"
           />
-          <label className="wide setting-toggle">
-            <input
-              checked={draft.musicFloating}
-              onChange={(event) => setDraft({ ...draft, musicFloating: event.target.checked })}
-              type="checkbox"
-            />
-            <span>音乐播放器使用浮屏形式</span>
-          </label>
         </div>
         <SubmitRow onClose={onClose} label="保存设置" />
       </form>
@@ -1377,6 +2019,74 @@ function SettingsModal({
           <button className="save-button" disabled={savingMusic} type="submit"><Save size={17} />{savingMusic ? "添加中..." : "添加歌曲"}</button>
         </div>
       </form>
+      <form className="music-add-panel compact" onSubmit={handlePlaylistImport}>
+        <div className="modal-subhead">
+          <span className="eyebrow">QQ Music</span>
+          <h3>导入 QQ 音乐歌单</h3>
+        </div>
+        <div className="writer-grid">
+          <TextInput wide label="QQ 音乐歌单链接" value={playlistUrl} onChange={setPlaylistUrl} placeholder="粘贴 y.qq.com 歌单链接，例如 /playlist/123456" />
+        </div>
+        <div className="modal-actions">
+          <button className="save-button" disabled={importingPlaylist || !playlistUrl.trim()} type="submit"><ListMusic size={17} />{importingPlaylist ? "识别中..." : "识别并导入歌单"}</button>
+        </div>
+      </form>
+      <section className="music-library-panel">
+        <button className="music-library-toggle" onClick={() => setLibraryOpen((value) => !value)} type="button">
+          <span><ListMusic size={17} />我的曲库</span>
+          <strong>{tracks.length} 首</strong>
+        </button>
+        {libraryOpen ? (
+          <>
+            <div className="music-library-bulkbar">
+              <button disabled={!selectableTrackIds.length} onClick={toggleAllTracks} type="button">
+                {allSelected ? "取消全选" : "全选"}
+              </button>
+              <span>已选 {selectedCount} 首</span>
+              <button className="danger-button small" disabled={!selectedCount} onClick={handleDeleteSelected} type="button">
+                <Trash2 size={15} />删除选中
+              </button>
+            </div>
+            <div className="music-library-list">
+              {tracks.map((track, index) => {
+                const source = normalizeExternalUrl(track.audioUrl);
+                const canEmbed = Boolean(getMusicPlaylistEmbedUrl(source));
+                const canPlayDirectly = Boolean(getPlayableAudioUrl(source));
+                const isCurrent = track.id === activeTrack.id;
+                const canSelect = Boolean(track.id && !track.id.startsWith("fallback-"));
+                const isSelected = Boolean(track.id && selectedTrackIds.includes(track.id));
+
+                return (
+                  <article className={isCurrent ? "music-library-item active" : "music-library-item"} key={track.id ?? `${track.title}-${index}`}>
+                    <div className="music-library-row">
+                      <label className="music-library-check">
+                        <input
+                          checked={isSelected}
+                          disabled={!canSelect}
+                          onChange={() => track.id && toggleTrackSelection(track.id)}
+                          type="checkbox"
+                        />
+                        <span className="sr-only">选择歌曲</span>
+                      </label>
+                      <button onClick={() => onSelectTrack(track)} type="button">
+                        <Play size={15} />
+                        <span>
+                          <strong>{track.title || "未命名歌曲"}</strong>
+                          <small>{track.artist || "未知歌手"} / {track.mood || "未填写备注"}</small>
+                        </span>
+                      </button>
+                    </div>
+                    <div className="music-library-meta">
+                      <span>{isCurrent ? "当前播放" : canEmbed ? "平台播放器" : canPlayDirectly ? "本地/直连音频" : source ? "仅来源链接" : "无音频来源"}</span>
+                      {source ? <a href={source} rel="noreferrer" target="_blank">打开来源</a> : null}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </>
+        ) : null}
+      </section>
     </ModalFrame>
   );
 }
@@ -1478,17 +2188,15 @@ function MediaSourceInput({
   async function handleUpload(file: File) {
     setUploading(true);
     setMessage("");
-    const formData = new FormData();
-    formData.append("file", file);
-    const response = await fetch("/api/uploads", { method: "POST", body: formData });
-    const result = await response.json();
-    setUploading(false);
-    if (!response.ok) {
-      setMessage(result.message ?? "上传失败。");
-      return;
+    try {
+      const url = await uploadMediaFile(file);
+      onChange(url);
+      setMessage("Uploaded.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Upload failed.");
+    } finally {
+      setUploading(false);
     }
-    onChange(result.url);
-    setMessage("本地文件已上传。");
   }
 
   return (
@@ -1497,7 +2205,7 @@ function MediaSourceInput({
       <div className="media-source-row">
         <label className="media-upload-button" htmlFor={inputId}>
           <UploadCloud size={16} />
-          {uploading ? "上传中..." : "本地上传"}
+          {uploading ? "Uploading..." : "Upload"}
         </label>
         <input
           accept={accept}
@@ -1531,49 +2239,215 @@ function SubmitRow({ dangerLabel, label, onClose, onDanger }: { dangerLabel?: st
   );
 }
 
+function MobileMusicWidget({
+  activeTrack,
+  activeTrackIndex,
+  isPlaying,
+  onModeChange,
+  onNext,
+  onPrevious,
+  onToggle,
+  playbackMode,
+  trackCount
+}: {
+  activeTrack: CmsTrack;
+  activeTrackIndex: number;
+  isPlaying: boolean;
+  onModeChange: (mode: PlaybackMode) => void;
+  onNext: () => void;
+  onPrevious: () => void;
+  onToggle: () => void;
+  playbackMode: PlaybackMode;
+  trackCount: number;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [position, setPosition] = useState({ x: 18, y: 104 });
+  const dragRef = useRef({ dragging: false, moved: false, startX: 0, startY: 0, originX: 18, originY: 104 });
+  const musicSource = normalizeExternalUrl(activeTrack.audioUrl);
+  const modeMeta = {
+    list: { label: "列表循环", Icon: Repeat },
+    single: { label: "单曲循环", Icon: Repeat1 },
+    shuffle: { label: "随机播放", Icon: Shuffle }
+  }[playbackMode];
+  const ModeIcon = modeMeta.Icon;
+
+  function cyclePlaybackMode() {
+    if (playbackMode === "list") onModeChange("single");
+    else if (playbackMode === "single") onModeChange("shuffle");
+    else onModeChange("list");
+  }
+
+  return (
+    <>
+      <button
+        aria-label="背景音乐"
+        className={isPlaying ? "mobile-music-bubble is-playing" : "mobile-music-bubble"}
+        onPointerDown={(event) => {
+          dragRef.current = { dragging: true, moved: false, startX: event.clientX, startY: event.clientY, originX: position.x, originY: position.y };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current;
+          if (!drag.dragging) return;
+          const dx = event.clientX - drag.startX;
+          const dy = event.clientY - drag.startY;
+          if (Math.abs(dx) + Math.abs(dy) > 6) drag.moved = true;
+          setPosition({
+            x: Math.min(Math.max(10, drag.originX + dx), window.innerWidth - 70),
+            y: Math.min(Math.max(74, drag.originY + dy), window.innerHeight - 150)
+          });
+        }}
+        onPointerUp={() => {
+          if (!dragRef.current.moved) setIsOpen(true);
+          dragRef.current.dragging = false;
+        }}
+        style={{ left: position.x, top: position.y, "--track-accent": activeTrack.accent } as CSSProperties}
+        type="button"
+      >
+        <span className="mobile-vinyl"><span /></span>
+      </button>
+      {isOpen ? (
+        <div className="mobile-music-sheet" role="dialog" aria-modal="true">
+          <button className="mobile-music-scrim" onClick={() => setIsOpen(false)} type="button" aria-label="关闭音乐面板" />
+          <section className="mobile-music-panel" style={{ "--track-accent": activeTrack.accent } as CSSProperties}>
+            <div className="mobile-music-panel-head">
+              <span className="mobile-vinyl large"><span /></span>
+              <div>
+                <span className="eyebrow">{trackCount ? `${activeTrackIndex + 1}/${trackCount}` : "0/0"} Now Playing</span>
+                <h3>{activeTrack.title || "未命名歌曲"}</h3>
+                <p>{activeTrack.artist || "未知歌手"} / {activeTrack.mood || "未填写备注"}</p>
+              </div>
+            </div>
+            <div className="mobile-music-controls">
+              <button onClick={onPrevious} type="button" aria-label="上一首">‹</button>
+              <button className="primary" onClick={onToggle} type="button" aria-label={isPlaying ? "暂停" : "播放"}>{isPlaying ? <Pause size={21} /> : <Play size={21} />}</button>
+              <button onClick={onNext} type="button" aria-label="下一首">›</button>
+              <button onClick={cyclePlaybackMode} type="button" aria-label={modeMeta.label} title={modeMeta.label}><ModeIcon size={18} /></button>
+              {musicSource ? <a href={musicSource} rel="noreferrer" target="_blank">来源</a> : null}
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function MiniMusicDock({
   activeTrack,
+  activeTrackIndex,
   isFloating,
   isPlaying,
+  onEnded,
+  onModeChange,
+  trackCount,
   onNext,
+  onPrevious,
+  playbackMode,
   onToggle
 }: {
   activeTrack: CmsTrack;
+  activeTrackIndex: number;
   isFloating: boolean;
   isPlaying: boolean;
+  onEnded: () => void;
+  onModeChange: (mode: PlaybackMode) => void;
+  trackCount: number;
   onNext: () => void;
+  onPrevious: () => void;
+  playbackMode: PlaybackMode;
   onToggle: () => void;
 }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [audioFailed, setAudioFailed] = useState(false);
   const musicSource = normalizeExternalUrl(activeTrack.audioUrl);
+  const playableAudioUrl = getPlayableAudioUrl(musicSource);
   const playlistEmbedUrl = getMusicPlaylistEmbedUrl(musicSource);
+  const canUseNativeAudio = Boolean(playableAudioUrl && !audioFailed);
+  const isListEmbed = playlistEmbedUrl.includes("type=0") || playlistEmbedUrl.includes("songlist=");
+  const platformTrackDurationMs = getPlatformTrackDurationMs(musicSource);
+  const modeMeta = {
+    list: { label: "列表循环", Icon: Repeat },
+    single: { label: "单曲循环", Icon: Repeat1 },
+    shuffle: { label: "随机播放", Icon: Shuffle }
+  }[playbackMode];
+  const ModeIcon = modeMeta.Icon;
+
+  useEffect(() => {
+    setAudioFailed(false);
+  }, [playableAudioUrl]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !canUseNativeAudio) return;
+    if (isPlaying) {
+      void audio.play().catch(() => undefined);
+    } else {
+      audio.pause();
+    }
+  }, [canUseNativeAudio, isPlaying, playableAudioUrl]);
+
+  useEffect(() => {
+    if (!isPlaying || canUseNativeAudio || !playlistEmbedUrl || playbackMode === "single" || trackCount <= 1) return;
+    const timer = window.setTimeout(onEnded, platformTrackDurationMs);
+    return () => window.clearTimeout(timer);
+  }, [activeTrack.id, canUseNativeAudio, isPlaying, onEnded, playbackMode, platformTrackDurationMs, playlistEmbedUrl, trackCount]);
+
+  function cyclePlaybackMode() {
+    if (playbackMode === "list") {
+      onModeChange("single");
+      return;
+    }
+    if (playbackMode === "single") {
+      onModeChange("shuffle");
+      return;
+    }
+    onModeChange("list");
+  }
 
   return (
-    <aside className="mini-music" style={{ "--track-accent": activeTrack.accent } as CSSProperties} aria-label="背景音乐播放器">
-      {playlistEmbedUrl || activeTrack.audioUrl ? (
-        <div className="mini-playlist-player">
-          {isPlaying && playlistEmbedUrl ? (
-            <iframe className="mini-playlist-frame" src={playlistEmbedUrl} title="歌单播放器" allow="autoplay; encrypted-media" />
-          ) : isPlaying && activeTrack.audioUrl ? (
-            <audio className="mini-audio-player" src={musicSource} autoPlay controls />
-          ) : (
-            <div className="mini-playlist-paused">
-              <Radio size={20} />
-              <strong>{activeTrack.title}</strong>
-              <small>点击播放重新载入音乐</small>
-            </div>
-          )}
-          <div className="mini-playlist-actions">
-            <button onClick={onToggle} type="button">{isPlaying ? <Pause size={16} /> : <Play size={16} />}{isPlaying ? "暂停" : "播放"}</button>
-            {musicSource ? <a href={musicSource} rel="noreferrer" target="_blank">打开来源</a> : null}
-          </div>
+    <aside className={isFloating ? "mini-music" : "mini-music inline"} style={{ "--track-accent": activeTrack.accent } as CSSProperties} aria-label="背景音乐播放器">
+      <div className="music-icon-wrapper" aria-hidden="true">
+        <div className="gramophone">
+          <span className="record spinning" />
+          <span className="horn" />
         </div>
-      ) : (
-        <>
-          <div className="gramophone" aria-hidden="true"><div className={isPlaying ? "record spinning" : "record"} /><div className="horn" /></div>
-          <div className="mini-copy"><span><Radio size={13} />BGM</span><strong>{activeTrack.title}</strong><small>{activeTrack.artist} / {activeTrack.mood}</small>{musicSource ? <a href={musicSource} rel="noreferrer" target="_blank">打开来源</a> : null}</div>
-          <div className="mini-actions"><button onClick={onToggle} type="button" aria-label={isPlaying ? "暂停背景音乐" : "播放背景音乐"}>{isPlaying ? <Pause size={16} /> : <Play size={16} />}</button><button onClick={onNext} type="button" aria-label="切换下一首背景音乐"><Sparkles size={16} /></button></div>
-        </>
-      )}
+      </div>
+      <div className="mini-track-meta">
+        <span><Disc3 size={14} />{trackCount ? `${activeTrackIndex + 1}/${trackCount}` : "0/0"}</span>
+        <strong>{activeTrack.title || "未命名歌曲"}</strong>
+        <small>{activeTrack.artist || "未知歌手"} / {activeTrack.mood || "未填写备注"}</small>
+      </div>
+
+      <div className="mini-progress-column">
+        {isPlaying && playlistEmbedUrl && !canUseNativeAudio ? (
+          <iframe className={isListEmbed ? "mini-playlist-frame list" : "mini-playlist-frame"} key={playlistEmbedUrl} src={playlistEmbedUrl} title="歌单播放器" allow="autoplay; encrypted-media" />
+        ) : null}
+        {playableAudioUrl && !audioFailed ? (
+          <audio
+            ref={audioRef}
+            key={playableAudioUrl}
+            src={playableAudioUrl}
+            loop={playbackMode === "single" || trackCount <= 1}
+            onEnded={onEnded}
+            onError={() => setAudioFailed(true)}
+          />
+        ) : null}
+        {!canUseNativeAudio && musicSource ? (
+          <small className="mini-source-note">
+            {playlistEmbedUrl ? "已切换到 QQ 音乐播放器，可继续用上一首/下一首换曲。" : "这个来源暂时不能直接播放，请打开来源收听。"}
+          </small>
+        ) : null}
+      </div>
+
+      <div className="mini-actions">
+        <button onClick={onPrevious} type="button" aria-label="上一首"><span aria-hidden="true">‹</span></button>
+        <button className="primary" onClick={onToggle} type="button" aria-label={isPlaying ? "暂停背景音乐" : "播放背景音乐"}>{isPlaying ? <Pause size={17} /> : <Play size={17} />}</button>
+        <button onClick={onNext} type="button" aria-label="下一首"><span aria-hidden="true">›</span></button>
+        <button className="active mode" onClick={cyclePlaybackMode} type="button" aria-label={modeMeta.label} title={modeMeta.label}>
+          <ModeIcon size={16} />
+        </button>
+        {musicSource ? <a href={musicSource} rel="noreferrer" target="_blank" aria-label="打开来源">源</a> : null}
+      </div>
     </aside>
   );
 }

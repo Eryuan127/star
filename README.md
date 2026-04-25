@@ -1,12 +1,12 @@
 # 我的追星日记
 
-一个面向个人追星记录的初版网站：包含线下日记、线上日记、小目标、碎碎念、追星技能展示，并预留 MySQL 数据库结构。
+一个面向个人追星记录的网站，包含线下日记、线上日记、小目标、碎碎念、追星技能展示、音乐和视频模块。
 
-## 技术选择
+## 技术栈
 
-- `Next.js`：适合做高质感响应式页面，也方便后续扩展后台管理。
-- `Prisma + MySQL`：日记、标签、目标、技能这类结构化内容更适合关系型数据库。MySQL 部署成本低，云服务选择多。
-- `lucide-react`：使用专业线性图标替代表情符号，保证界面更干净。
+- `Next.js`: 页面、路由和 API。
+- `Prisma + SQLite`: 本地开发数据存储。
+- `lucide-react`: 图标。
 
 ## 本地运行
 
@@ -17,27 +17,30 @@ npm run dev
 
 打开 `http://localhost:3000`。
 
-## 接入 MySQL
+## 公开部署
 
-1. 复制 `.env.example` 为 `.env`。
-2. 修改 `DATABASE_URL`：
+推荐部署到 Vercel。这样别人可以直接通过公网 URL 打开网站，不需要你的电脑保持开机，也不依赖你的本地开发环境。
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Eryuan127/star)
+
+详细步骤见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
+
+## 数据库说明
+
+`.env.example` 默认使用本地 SQLite:
 
 ```env
-DATABASE_URL="mysql://USER:PASSWORD@localhost:3306/idol_diary"
+DATABASE_URL="file:./dev.db"
 ```
 
-3. 推送数据库结构：
+如果线上没有配置 `DATABASE_URL`，网站会使用 `lib/data.ts` 里的示例数据，适合先公开展示页面。
+
+如果要让线上登录、后台编辑、发布内容长期保存，需要改接 hosted database，并在部署平台配置 `DATABASE_URL`。
+
+## 常用命令
 
 ```bash
+npm run build
 npm run db:generate
 npm run db:push
 ```
-
-没有配置数据库时，页面会使用 `lib/data.ts` 里的示例数据，API `/api/entries` 也会返回 fallback 数据，方便先看设计效果。
-
-## 后续建议
-
-- 增加后台编辑页：新增/编辑日记、上传图片、维护技能和目标。
-- 增加相册或票根墙：线下日记可以绑定多张图片、票根、座位图和路线截图。
-- 增加隐私分级：公开展示、仅自己可见、草稿三种状态。
-- 增加筛选系统：按艺人、地区、年份、线上/线下、幸福瞬间分类。
